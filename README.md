@@ -152,7 +152,7 @@ This project is licensed under the **MIT License** — feel free to modify and d
 
 ```
 
----
+---<img width="1066" height="792" alt="image" src="https://github.com/user-attachments/assets/048036cc-2969-42dd-acb7-a924d38f1950" />
 
-Would you like me to include a **screenshot section** and a **“Future Enhancements”** list (e.g. password protection, upload support, etc.) to make it look even more professional for GitHub?
+
 ```
