@@ -149,10 +149,3 @@ This project is licensed under the **MIT License** — feel free to modify and d
 ---
 
 ### 🌐 “Share files. Instantly. Locally.”
-
-```
-
----<img width="1066" height="792" alt="image" src="https://github.com/user-attachments/assets/048036cc-2969-42dd-acb7-a924d38f1950" />
-
-
-```
