@@ -2,17 +2,18 @@
 """
 http_file_server_gui.py
 
-A PyQt6/PyQt5 desktop app to run Python’s built-in http.server with a clean UI.
+A PyQt6/PyQt5 desktop app for running Python's built-in http.server
+with a clean GUI and modern features.
 
 Features:
-- Folder selection (browse)
-- Auto-detect free port (manual override allowed)
+- Folder selection
+- Auto-detect free port (manual override)
 - Dark/Light theme toggle
 - Start/Stop server (subprocess)
-- Displays server status + URL
+- Shows server status + URL
 - Auto-copies URL to clipboard
-- QR code for local access
-- Live log viewer (stdout/stderr)
+- QR code for local access (auto-scaled)
+- Live log viewer
 - System tray minimize (Show/Hide/Stop/Exit)
 """
 
@@ -59,8 +60,7 @@ def find_local_ip():
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            return ip
+            return s.getsockname()[0]
     except Exception:
         return "127.0.0.1"
 
@@ -80,7 +80,7 @@ def find_free_port(start=8000, host="0.0.0.0"):
     for port in range(start, 9000):
         if is_port_free(port, host):
             return port
-    raise RuntimeError("No free ports found in range 8000-9000.")
+    raise RuntimeError("No free ports found in range 8000–9000.")
 
 
 def generate_qr_pixmap(url: str, size: int = 240) -> QPixmap:
@@ -207,9 +207,15 @@ class HttpServerGUI(QWidget):
         left_box.addWidget(self.copy_note)
         mg_layout.addLayout(left_box)
 
-        self.qr_label = QLabel()
-        self.qr_label.setFixedSize(260, 260)
-        mg_layout.addWidget(self.qr_label)
+        # ✅ Fixed QR display
+        self.qr_label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        self.qr_label.setMinimumSize(220, 220)
+        self.qr_label.setScaledContents(True)
+        self.qr_label.setStyleSheet(
+            "border: 1px solid #444; border-radius: 8px; background-color: white;"
+        )
+        mg_layout.addWidget(self.qr_label, alignment=Qt.AlignmentFlag.AlignCenter)
+
         mid_group.setLayout(mg_layout)
         layout.addWidget(mid_group)
 
@@ -299,7 +305,8 @@ class HttpServerGUI(QWidget):
         pyperclip.copy(url)
         self.copy_note.setText("URL copied to clipboard")
 
-        self.qr_label.setPixmap(generate_qr_pixmap(url))
+        pixmap = generate_qr_pixmap(url)
+        self.qr_label.setPixmap(pixmap)
 
         self.logger_thread = ProcessLogger(self.process, self.log_queue)
         self.logger_thread.start()
@@ -322,8 +329,7 @@ class HttpServerGUI(QWidget):
     def _drain_log_queue(self):
         while not self.log_queue.empty():
             typ, line = self.log_queue.get()
-            prefix = f"[{typ}]"
-            self.log_text.append(f"{prefix} {line}")
+            self.log_text.append(f"[{typ}] {line}")
 
         if self.server_running and self.process.poll() is not None:
             self._stop_server()
