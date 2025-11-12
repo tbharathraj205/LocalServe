@@ -1,135 +1,19 @@
-#!/usr/bin/env python3
-"""
-http_file_server_gui.py
-
-A PyQt6/PyQt5 desktop app for running Python's built-in http.server
-with a clean GUI and modern features.
-
-Features:
-- Folder selection
-- Auto-detect free port (manual override)
-- Dark/Light theme toggle
-- Start/Stop server (subprocess)
-- Shows server status + URL
-- Auto-copies URL to clipboard
-- QR code for local access (auto-scaled)
-- Live log viewer
-- System tray minimize (Show/Hide/Stop/Exit)
-"""
-
 import sys
 import os
-import socket
-import subprocess
-import threading
 import queue
-import signal
-import time
-from pathlib import Path
-from io import BytesIO
+from PyQt6.QtWidgets import (
+    QWidget, QLabel, QLineEdit, QPushButton, QTextEdit,
+    QFileDialog, QHBoxLayout, QVBoxLayout, QGridLayout,
+    QGroupBox, QSpinBox, QMessageBox, QSystemTrayIcon, QMenu, QStyle
+)
+from PyQt6.QtGui import QPixmap, QIcon, QAction
+from PyQt6.QtCore import Qt, QTimer
 
-# --- Handle PyQt6 / PyQt5 compatibility ---
-try:
-    from PyQt6.QtWidgets import (
-        QApplication, QWidget, QLabel, QLineEdit, QPushButton, QTextEdit,
-        QFileDialog, QHBoxLayout, QVBoxLayout, QGridLayout, QGroupBox,
-        QSpinBox, QMessageBox, QSystemTrayIcon, QMenu, QStyle
-    )
-    from PyQt6.QtGui import QPixmap, QImage, QIcon, QAction
-    from PyQt6.QtCore import Qt, QTimer, QSize
-    PYQT_VERSION = 6
-except ImportError:
-    from PyQt5.QtWidgets import (
-        QApplication, QWidget, QLabel, QLineEdit, QPushButton, QTextEdit,
-        QFileDialog, QHBoxLayout, QVBoxLayout, QGridLayout, QGroupBox,
-        QSpinBox, QMessageBox, QSystemTrayIcon, QMenu, QAction, QStyle
-    )
-    from PyQt5.QtGui import QPixmap, QImage, QIcon
-    from PyQt5.QtCore import Qt, QTimer, QSize
-    PYQT_VERSION = 5
-
-import qrcode
-from PIL import Image
+from utils import find_free_port, find_local_ip, is_port_free, generate_qr_pixmap
+from server_manager import ServerManager
+from logger_thread import ProcessLogger
 import pyperclip
 
-
-# ------------------ Utility functions ------------------
-
-def find_local_ip():
-    """Return the local IP address (not 127.0.0.1)."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
-    except Exception:
-        return "127.0.0.1"
-
-
-def is_port_free(port, host="0.0.0.0"):
-    """Check if a port is available."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.bind((host, port))
-            return True
-        except OSError:
-            return False
-
-
-def find_free_port(start=8000, host="0.0.0.0"):
-    """Find the next available port from start upwards."""
-    for port in range(start, 9000):
-        if is_port_free(port, host):
-            return port
-    raise RuntimeError("No free ports found in range 8000–9000.")
-
-
-def generate_qr_pixmap(url: str, size: int = 240) -> QPixmap:
-    """Generate QR code QPixmap for a given URL."""
-    qr = qrcode.QRCode(
-        version=1, box_size=6, border=2,
-        error_correction=qrcode.constants.ERROR_CORRECT_L
-    )
-    qr.add_data(url)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-    img = img.resize((size, size), Image.Resampling.LANCZOS)
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    qimg = QImage.fromData(buf.getvalue())
-    return QPixmap.fromImage(qimg)
-
-
-# ------------------ Logger Thread ------------------
-
-class ProcessLogger(threading.Thread):
-    """Reads process stdout/stderr and pushes to a queue."""
-    def __init__(self, process, q):
-        super().__init__(daemon=True)
-        self.process = process
-        self.q = q
-        self._stop = threading.Event()
-
-    def run(self):
-        while not self._stop.is_set():
-            if self.process.poll() is not None:
-                break
-            line = self.process.stdout.readline()
-            if line:
-                self.q.put(("OUT", line.strip()))
-            err = self.process.stderr.readline()
-            if err:
-                self.q.put(("ERR", err.strip()))
-        # Drain remaining
-        for line in self.process.stdout:
-            self.q.put(("OUT", line.strip()))
-        for line in self.process.stderr:
-            self.q.put(("ERR", line.strip()))
-
-    def stop(self):
-        self._stop.set()
-
-
-# ------------------ Main GUI ------------------
 
 class HttpServerGUI(QWidget):
     def __init__(self):
@@ -137,9 +21,9 @@ class HttpServerGUI(QWidget):
         self.setWindowTitle("Simple HTTP File Server")
         self.setMinimumSize(850, 600)
 
-        self.process = None
-        self.logger_thread = None
+        self.manager = ServerManager()
         self.log_queue = queue.Queue()
+        self.logger_thread = None
         self.server_running = False
         self._exiting = False
 
@@ -152,17 +36,15 @@ class HttpServerGUI(QWidget):
 
         self._apply_light_theme()
 
-    # ----------- UI -----------
-
+    # ---------- UI ----------
     def _build_ui(self):
         layout = QVBoxLayout(self)
 
-        # Folder and port controls
         top_group = QGroupBox("Server Controls")
         tg_layout = QGridLayout()
 
         tg_layout.addWidget(QLabel("Folder to Serve:"), 0, 0)
-        self.folder_line = QLineEdit(str(Path.home()))
+        self.folder_line = QLineEdit(os.path.expanduser("~"))
         browse_btn = QPushButton("Browse")
         browse_btn.clicked.connect(self._browse_folder)
         tg_layout.addWidget(self.folder_line, 0, 1)
@@ -207,7 +89,6 @@ class HttpServerGUI(QWidget):
         left_box.addWidget(self.copy_note)
         mg_layout.addLayout(left_box)
 
-        # ✅ Fixed QR display
         self.qr_label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         self.qr_label.setMinimumSize(220, 220)
         self.qr_label.setScaledContents(True)
@@ -215,7 +96,6 @@ class HttpServerGUI(QWidget):
             "border: 1px solid #444; border-radius: 8px; background-color: white;"
         )
         mg_layout.addWidget(self.qr_label, alignment=Qt.AlignmentFlag.AlignCenter)
-
         mid_group.setLayout(mg_layout)
         layout.addWidget(mid_group)
 
@@ -235,8 +115,7 @@ class HttpServerGUI(QWidget):
         self.status_label = QLabel("Status: Stopped")
         layout.addWidget(self.status_label)
 
-    # ----------- Behavior -----------
-
+    # ---------- Behaviors ----------
     def _browse_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder")
         if folder:
@@ -270,9 +149,6 @@ class HttpServerGUI(QWidget):
         """)
 
     def _start_server(self):
-        if self.server_running:
-            return
-
         folder = self.folder_line.text()
         port = self.port_spin.value()
 
@@ -280,18 +156,9 @@ class HttpServerGUI(QWidget):
             QMessageBox.warning(self, "Error", "Invalid folder path.")
             return
 
-        if not is_port_free(port):
-            port = find_free_port(8000)
-            self.port_spin.setValue(port)
-
-        cmd = [sys.executable, "-m", "http.server", str(port), "--bind", "0.0.0.0"]
-
-        try:
-            self.process = subprocess.Popen(
-                cmd, cwd=folder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Failed", str(e))
+        process = self.manager.start_server(folder, port)
+        if not process:
+            QMessageBox.critical(self, "Error", "Could not start server.")
             return
 
         self.server_running = True
@@ -304,22 +171,14 @@ class HttpServerGUI(QWidget):
         self.url_display.setText(url)
         pyperclip.copy(url)
         self.copy_note.setText("URL copied to clipboard")
+        self.qr_label.setPixmap(generate_qr_pixmap(url))
 
-        pixmap = generate_qr_pixmap(url)
-        self.qr_label.setPixmap(pixmap)
-
-        self.logger_thread = ProcessLogger(self.process, self.log_queue)
+        self.logger_thread = ProcessLogger(process, self.log_queue)
         self.logger_thread.start()
         self.log_text.append(f"[SYS] Server started at {url}")
 
     def _stop_server(self):
-        if not self.server_running:
-            return
-        try:
-            self.process.terminate()
-            self.process.wait(timeout=2)
-        except Exception:
-            self.process.kill()
+        self.manager.stop_server()
         self.server_running = False
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -331,14 +190,10 @@ class HttpServerGUI(QWidget):
             typ, line = self.log_queue.get()
             self.log_text.append(f"[{typ}] {line}")
 
-        if self.server_running and self.process.poll() is not None:
-            self._stop_server()
-
-    # ----------- Tray icon -----------
-
+    # ---------- Tray ----------
     def _create_tray_icon(self):
         self.tray = QSystemTrayIcon(self)
-        icon = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
         self.tray.setIcon(icon)
         self.setWindowIcon(icon)
 
@@ -360,8 +215,6 @@ class HttpServerGUI(QWidget):
         self.tray.activated.connect(self._tray_click)
         self.tray.show()
 
-        QApplication.setQuitOnLastWindowClosed(False)
-
     def _tray_click(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self._toggle_window()
@@ -374,33 +227,16 @@ class HttpServerGUI(QWidget):
             self.activateWindow()
 
     def closeEvent(self, event):
-        if self._exiting:
-            event.accept()
-        else:
-            event.ignore()
-            self.hide()
-            self.tray.showMessage("Simple HTTP Server", "App minimized to tray.", QSystemTrayIcon.MessageIcon.Information, 3000)
+        event.ignore()
+        self.hide()
+        self.tray.showMessage(
+            "Simple HTTP Server",
+            "App minimized to tray.",
+            QSystemTrayIcon.MessageIcon.Information,
+            3000,
+        )
 
     def _exit_app(self):
-        self._exiting = True
         if self.server_running:
-            self._stop_server()
-        QApplication.quit()
-
-
-# ------------------ Main ------------------
-
-def main():
-    app = QApplication(sys.argv)
-    win = HttpServerGUI()
-    win.show()
-
-    def cleanup(*_):
-        win._exit_app()
-
-    signal.signal(signal.SIGINT, cleanup)
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
+            self.manager.stop_server()
+        sys.exit(0)

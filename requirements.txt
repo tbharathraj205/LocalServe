@@ -1,0 +1,4 @@
+PyQt6>=6.4.0
+qrcode[pil]
+Pillow
+pyperclip
